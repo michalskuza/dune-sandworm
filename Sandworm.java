@@ -13,6 +13,10 @@ public class Sandworm {
     private static final String WORM_HEAD_COLOR = "\033[37m";
     private static final String SAND_PARTICLE_COLOR = "\033[93m";
     private static final String SPICE_COLOR = "\033[95m";
+    private static final String ALT_SCREEN_ON = "\033[?1049h";
+    private static final String ALT_SCREEN_OFF = "\033[?1049l";
+    private static final String HIDE_CURSOR = "\033[?25l";
+    private static final String SHOW_CURSOR = "\033[?25h";
 
     private static int width = 80;
     private static int height = 24;
@@ -173,7 +177,8 @@ public class Sandworm {
             }
         }
 
-        var out = new StringBuilder(CURSOR_TOP_LEFT);
+        var out = new StringBuilder();
+        out.append(CURSOR_TOP_LEFT);
         for (var y = 0; y < height; y++) {
             for (var x = 0; x < width; x++) {
                 var cell = grid[y][x];
@@ -185,7 +190,11 @@ public class Sandworm {
             }
             out.append("\n");
         }
-        System.out.print(out.toString());
+        var frameStr = out.toString();
+        synchronized (System.out) {
+            System.out.print(frameStr);
+            System.out.flush();
+        }
     }
 
     public static void main(String[] args) throws InterruptedException {
@@ -258,11 +267,13 @@ public class Sandworm {
         var maxFrames = testMode ? 100 : Integer.MAX_VALUE;
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.print(RESET + CLEAR_SCREEN + CURSOR_TOP_LEFT);
+            System.out.print(ALT_SCREEN_OFF + SHOW_CURSOR + RESET);
             System.out.println("The spice must flow.");
+            System.out.flush();
         }));
 
-        System.out.print(CLEAR_SCREEN);
+        System.out.print(ALT_SCREEN_ON + HIDE_CURSOR + CLEAR_SCREEN);
+        System.out.flush();
         var t = 0;
         while (frameCount < maxFrames) {
             if (needsRedraw.getAndSet(false)) {
