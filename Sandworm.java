@@ -1,6 +1,7 @@
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Sandworm {
     // ANSI Escape Codes
@@ -16,6 +17,7 @@ public class Sandworm {
     private static int width = 80;
     private static int height = 24;
     private static final Random random = new Random();
+    private static final AtomicBoolean needsRedraw = new AtomicBoolean(false);
 
     static class Particle {
         double x, y, vx, vy;
@@ -43,6 +45,33 @@ public class Sandworm {
         DuneConfig(int yBase, double amplitude, double frequency, double phase, char symbol, char fillChar) {
             this.yBase = yBase; this.amplitude = amplitude; this.frequency = frequency;
             this.phase = phase; this.symbol = symbol; this.fillChar = fillChar;
+        }
+    }
+
+    private static int[] getTerminalSize() {
+        try {
+            var cols = System.getenv("COLUMNS");
+            var lines = System.getenv("LINES");
+            int w = width, h = height;
+            if (cols != null) w = Integer.parseInt(cols);
+            if (lines != null) h = Integer.parseInt(lines);
+
+            if (cols == null || lines == null) {
+                Process p = new ProcessBuilder("sh", "-c", "stty size < /dev/tty").start();
+                var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
+                var size = reader.readLine();
+                if (size != null) {
+                    var parts = size.trim().split("\\s+");
+                    if (parts.length >= 2) {
+                        h = Integer.parseInt(parts[0]);
+                        w = Integer.parseInt(parts[1]);
+                    }
+                }
+                p.waitFor();
+            }
+            return new int[]{w, h};
+        } catch (Exception ignored) {
+            return new int[]{width, height};
         }
     }
 
@@ -165,39 +194,54 @@ public class Sandworm {
             if (arg.equals("--test")) testMode = true;
         }
 
-        // Try to get terminal size
-        try {
-            var cols = System.getenv("COLUMNS");
-            var lines = System.getenv("LINES");
-            if (cols != null) width = Integer.parseInt(cols);
-            if (lines != null) height = Integer.parseInt(lines);
+        // Get initial terminal size
+        var size = getTerminalSize();
+        width = size[0];
+        height = size[1];
 
-            if (cols == null || lines == null) {
-                Process p = new ProcessBuilder("sh", "-c", "stty size < /dev/tty").start();
-                var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-                var size = reader.readLine();
-                if (size != null) {
-                    var parts = size.trim().split("\\s+");
-                    if (parts.length >= 2) {
-                        height = Integer.parseInt(parts[0]);
-                        width = Integer.parseInt(parts[1]);
+        // Start monitor thread for terminal resize
+        var resizeMonitor = new Thread(() -> {
+            var lastW = width;
+            var lastH = height;
+            while (true) {
+                try {
+                    Thread.sleep(200);
+                    var curSize = getTerminalSize();
+                    if (curSize[0] != lastW || curSize[1] != lastH) {
+                        width = curSize[0];
+                        height = curSize[1];
+                        needsRedraw.set(true);
+                        lastW = width;
+                        lastH = height;
                     }
+                } catch (Exception e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
-        } catch (Exception ignored) {}
+        });
+        resizeMonitor.setDaemon(true);
+        resizeMonitor.start();
 
         var bgConfigs = new ArrayList<DuneConfig>();
-        bgConfigs.add(new DuneConfig(height / 2 - 3, 4, 0.04, 0, '*', '.'));
-        bgConfigs.add(new DuneConfig(height / 2 + 1, 5, 0.07, 2, '^', '.'));
-
         var fgConfigs = new ArrayList<DuneConfig>();
-        fgConfigs.add(new DuneConfig(height / 2 + 7, 6, 0.09, 4, '_', ','));
-
         var bgLayers = new ArrayList<String[][]>();
-        for (var c : bgConfigs) bgLayers.add(generateDuneLayer(c));
-
         var fgLayers = new ArrayList<String[][]>();
-        for (var c : fgConfigs) fgLayers.add(generateDuneLayer(c));
+
+        var regenerateLayers = new Runnable() {
+            public void run() {
+                bgConfigs.clear();
+                bgConfigs.add(new DuneConfig(height / 2 - 3, 4, 0.04, 0, '*', '.'));
+                bgConfigs.add(new DuneConfig(height / 2 + 1, 5, 0.07, 2, '^', '.'));
+                fgConfigs.clear();
+                fgConfigs.add(new DuneConfig(height / 2 + 7, 6, 0.09, 4, '_', ','));
+                bgLayers.clear();
+                for (var c : bgConfigs) bgLayers.add(generateDuneLayer(c));
+                fgLayers.clear();
+                for (var c : fgConfigs) fgLayers.add(generateDuneLayer(c));
+            }
+        };
+        regenerateLayers.run();
 
         var wormLength = 40;
         var wormSegments = new ArrayList<int[]>();
@@ -221,6 +265,15 @@ public class Sandworm {
         System.out.print(CLEAR_SCREEN);
         var t = 0;
         while (frameCount < maxFrames) {
+            if (needsRedraw.getAndSet(false)) {
+                System.out.print(CLEAR_SCREEN);
+                regenerateLayers.run();
+                wormSegments.clear();
+                for (var i = 0; i < wormLength; i++) wormSegments.add(new int[]{-100, -100});
+                particles.clear();
+                t = 0;
+            }
+
             t++;
             var headX = (t % (width + wormLength)) - wormLength;
             var headY = (int) (height / 2 + 5 + 9 * Math.sin(0.07 * headX));
