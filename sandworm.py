@@ -59,33 +59,36 @@ class Particle:
         self.vy += 0.05 # Gravity
 
 def draw_frame(width, height, worm_pos, bg_layers, fg_layers, particles, spice):
-    grid = [[' ' for _ in range(width)] for _ in range(height)]
+    char_grid = [[' ' for _ in range(width)] for _ in range(height)]
+    color_grid = [[RESET for _ in range(width)] for _ in range(height)]
     
+    # Spice (Stars)
     for x, y, char in spice:
         if 0 <= x < width and 0 <= y < height:
-            if random.random() > 0.05:
-                grid[int(y)][int(x)] = f"{SPICE_COLOR}{char}{RESET}"
+            char_grid[int(y)][int(x)] = char
+            color_grid[int(y)][int(x)] = SPICE_COLOR
 
+    # BG Layers
     for layer in bg_layers:
         for y in range(height):
             for x in range(width):
-                if layer[y][x]: grid[y][x] = layer[y][x]
+                if layer[y][x]:
+                    char_grid[y][x] = layer[y][x]
+                    color_grid[y][x] = SAND_COLOR
                     
     # Draw Worm
     for i, (wx, wy) in enumerate(worm_pos):
-        # Beefier segments
         if i == 0:
-            # Huge Maw
             for dy in range(-2, 3):
                 for dx in range(-2, 3):
                     px, py = int(wx + dx), int(wy + dy)
                     if 0 <= px < width and 0 <= py < height:
-                        # Teeth pattern
                         dist = math.sqrt(dx*dx + dy*dy)
-                        if dist < 1.5: char = ' ' # Mouth opening
+                        if dist < 1.5: char = ' '
                         elif dist < 2.5: char = 'v' if dy < 0 else '^'
                         else: char = 'X'
-                        grid[py][px] = f"{WORM_HEAD_COLOR}{char}{RESET}"
+                        char_grid[py][px] = char
+                        color_grid[py][px] = WORM_HEAD_COLOR
         else:
             thickness = max(1, int(4 * (1 - i/len(worm_pos))))
             for dy in range(-thickness, thickness + 1):
@@ -93,31 +96,38 @@ def draw_frame(width, height, worm_pos, bg_layers, fg_layers, particles, spice):
                     px, py = int(wx + dx), int(wy + dy)
                     if 0 <= px < width and 0 <= py < height:
                         if abs(dx) + abs(dy) <= thickness + 1:
-                            # Shading: use different chars for edges
                             char = '#' if abs(dx) + abs(dy) <= thickness else '+'
-                            grid[py][px] = f"{WORM_COLOR}{char}{RESET}"
+                            char_grid[py][px] = char
+                            color_grid[py][px] = WORM_COLOR
 
+    # Particles
     for p in particles:
         px, py = int(p.x), int(p.y)
         if 0 <= px < width and 0 <= py < height:
-            grid[py][px] = f"{p.color}{p.char}{RESET}"
+            char_grid[py][px] = p.char
+            color_grid[py][px] = p.color
 
+    # FG Layers
     for layer in fg_layers:
         for y in range(height):
             for x in range(width):
-                if layer[y][x]: grid[y][x] = layer[y][x]
+                if layer[y][x]:
+                    char_grid[y][x] = layer[y][x]
+                    color_grid[y][x] = SAND_COLOR
 
-    output = CURSOR_TOP_LEFT
+    output = [CURSOR_TOP_LEFT]
+    last_color = None
     for y in range(height):
-        line = ""
         for x in range(width):
-            cell = grid[y][x]
-            if len(cell) == 1 and cell in ['^', '_', '*', '.', ',']:
-                line += f"{SAND_COLOR}{cell}{RESET}"
-            else:
-                line += cell
-        output += line + "\n"
-    sys.stdout.write(output)
+            color = color_grid[y][x]
+            if color != last_color:
+                output.append(color)
+                last_color = color
+            output.append(char_grid[y][x])
+        if y < height - 1:
+            output.append("\n")
+            
+    sys.stdout.write("".join(output))
     sys.stdout.flush()
 
 def main():
