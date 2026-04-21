@@ -18,8 +18,8 @@ public class Sandworm {
     private static final String HIDE_CURSOR = "\033[?25l";
     private static final String SHOW_CURSOR = "\033[?25h";
 
-    private static int width = 80;
-    private static int height = 24;
+    private static volatile int width = 80;
+    private static volatile int height = 24;
     private static final Random random = new Random();
     private static final AtomicBoolean needsRedraw = new AtomicBoolean(false);
 
@@ -54,38 +54,35 @@ public class Sandworm {
 
     private static int[] getTerminalSize() {
         try {
+            Process p = new ProcessBuilder("sh", "-c", "stty size < /dev/tty").start();
+            var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
+            var size = reader.readLine();
+            if (size != null) {
+                var parts = size.trim().split("\\s+");
+                if (parts.length >= 2) {
+                    return new int[]{Integer.parseInt(parts[1]), Integer.parseInt(parts[0])};
+                }
+            }
+        } catch (Exception ignored) {}
+
+        try {
             var cols = System.getenv("COLUMNS");
             var lines = System.getenv("LINES");
-            int w = width, h = height;
-            if (cols != null) w = Integer.parseInt(cols);
-            if (lines != null) h = Integer.parseInt(lines);
-
-            if (cols == null || lines == null) {
-                Process p = new ProcessBuilder("sh", "-c", "stty size < /dev/tty").start();
-                var reader = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-                var size = reader.readLine();
-                if (size != null) {
-                    var parts = size.trim().split("\\s+");
-                    if (parts.length >= 2) {
-                        h = Integer.parseInt(parts[0]);
-                        w = Integer.parseInt(parts[1]);
-                    }
-                }
-                p.waitFor();
+            if (cols != null && lines != null) {
+                return new int[]{Integer.parseInt(cols), Integer.parseInt(lines)};
             }
-            return new int[]{w, h};
-        } catch (Exception ignored) {
-            return new int[]{width, height};
-        }
+        } catch (Exception ignored) {}
+
+        return new int[]{width, height};
     }
 
-    private static String[][] generateDuneLayer(DuneConfig config) {
-        var layer = new String[height][width];
-        for (var x = 0; x < width; x++) {
+    private static String[][] generateDuneLayer(DuneConfig config, int w, int h) {
+        var layer = new String[h][w];
+        for (var x = 0; x < w; x++) {
             var y = (int) (config.yBase + config.amplitude * Math.sin(config.frequency * x + config.phase));
-            if (y >= 0 && y < height) {
+            if (y >= 0 && y < h) {
                 layer[y][x] = String.valueOf(config.symbol);
-                for (var fillY = y + 1; fillY < height; fillY++) {
+                for (var fillY = y + 1; fillY < h; fillY++) {
                     layer[fillY][x] = String.valueOf(config.fillChar);
                 }
             }
@@ -94,64 +91,58 @@ public class Sandworm {
     }
 
     private static void drawFrame(List<int[]> wormPos, List<String[][]> bgLayers, List<String[][]> fgLayers, List<Particle> particles, List<double[]> spice) {
-        var grid = new String[height][width];
-        for (var y = 0; y < height; y++) {
-            for (var x = 0; x < width; x++) {
-                grid[y][x] = " ";
-            }
-        }
+        int h = height;
+        int w = width;
+        var charGrid = new char[h][w];
+        var colorGrid = new String[h][w];
 
-        // 0. Spice
-        for (var s : spice) {
-            var sx = (int) s[0];
-            var sy = (int) s[1];
-            if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
-                if (random.nextDouble() > 0.05) {
-                    grid[sy][sx] = SPICE_COLOR + (char) s[2] + RESET;
-                }
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                charGrid[y][x] = ' ';
+                colorGrid[y][x] = RESET;
             }
         }
 
         // 1. BG Layers
         for (var layer : bgLayers) {
-            for (var y = 0; y < height; y++) {
-                for (var x = 0; x < width; x++) {
-                    if (layer[y][x] != null) grid[y][x] = layer[y][x];
+            if (layer.length != h || (layer.length > 0 && layer[0].length != w)) continue;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    if (layer[y][x] != null) {
+                        charGrid[y][x] = layer[y][x].charAt(0);
+                        colorGrid[y][x] = SAND_COLOR;
+                    }
                 }
             }
         }
 
         // 2. Worm
-        for (var i = 0; i < wormPos.size(); i++) {
+        for (int i = 0; i < wormPos.size(); i++) {
             var pos = wormPos.get(i);
-            var wx = pos[0];
-            var wy = pos[1];
+            int wx = pos[0], wy = pos[1];
 
             if (i == 0) {
-                for (var dy = -2; dy <= 2; dy++) {
-                    for (var dx = -2; dx <= 2; dx++) {
-                        var px = wx + dx;
-                        var py = wy + dy;
-                        if (px >= 0 && px < width && py >= 0 && py < height) {
-                            var dist = Math.sqrt(dx * dx + dy * dy);
-                            char c;
-                            if (dist < 1.5) c = ' ';
-                            else if (dist < 2.5) c = (dy < 0) ? 'v' : '^';
-                            else c = 'X';
-                            grid[py][px] = WORM_HEAD_COLOR + c + RESET;
+                for (int dy = -2; dy <= 2; dy++) {
+                    for (int dx = -2; dx <= 2; dx++) {
+                        int px = wx + dx, py = wy + dy;
+                        if (px >= 0 && px < w && py >= 0 && py < h) {
+                            double dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < 1.5) charGrid[py][px] = ' ';
+                            else if (dist < 2.5) charGrid[py][px] = (dy < 0) ? 'v' : '^';
+                            else charGrid[py][px] = 'X';
+                            colorGrid[py][px] = WORM_HEAD_COLOR;
                         }
                     }
                 }
             } else {
-                var thickness = Math.max(1, (int) (4 * (1 - (double) i / wormPos.size())));
-                for (var dy = -thickness; dy <= thickness; dy++) {
-                    for (var dx = -thickness; dx <= thickness; dx++) {
-                        var px = wx + dx;
-                        var py = wy + dy;
-                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                int thickness = Math.max(1, (int) (4 * (1 - (double) i / wormPos.size())));
+                for (int dy = -thickness; dy <= thickness; dy++) {
+                    for (int dx = -thickness; dx <= thickness; dx++) {
+                        int px = wx + dx, py = wy + dy;
+                        if (px >= 0 && px < w && py >= 0 && py < h) {
                             if (Math.abs(dx) + Math.abs(dy) <= thickness + 1) {
-                                var c = (Math.abs(dx) + Math.abs(dy) <= thickness) ? '#' : '+';
-                                grid[py][px] = WORM_COLOR + c + RESET;
+                                charGrid[py][px] = (Math.abs(dx) + Math.abs(dy) <= thickness) ? '#' : '+';
+                                colorGrid[py][px] = WORM_COLOR;
                             }
                         }
                     }
@@ -161,40 +152,53 @@ public class Sandworm {
 
         // 3. Particles
         for (var p : particles) {
-            var px = (int) p.x;
-            var py = (int) p.y;
-            if (px >= 0 && px < width && py >= 0 && py < height) {
-                grid[py][px] = p.color + p.charStr + RESET;
+            int px = (int) p.x, py = (int) p.y;
+            if (px >= 0 && px < w && py >= 0 && py < h) {
+                charGrid[py][px] = p.charStr.charAt(0);
+                colorGrid[py][px] = p.color;
             }
         }
 
         // 4. FG Layers
         for (var layer : fgLayers) {
-            for (var y = 0; y < height; y++) {
-                for (var x = 0; x < width; x++) {
-                    if (layer[y][x] != null) grid[y][x] = layer[y][x];
+            if (layer.length != h || (layer.length > 0 && layer[0].length != w)) continue;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    if (layer[y][x] != null) {
+                        charGrid[y][x] = layer[y][x].charAt(0);
+                        colorGrid[y][x] = SAND_COLOR;
+                    }
                 }
             }
         }
 
-        var out = new StringBuilder();
-        out.append(CURSOR_TOP_LEFT);
-        for (var y = 0; y < height; y++) {
-            for (var x = 0; x < width; x++) {
-                var cell = grid[y][x];
-                if (cell.length() == 1 && "^_*.,".indexOf(cell.charAt(0)) != -1) {
-                    out.append(SAND_COLOR).append(cell).append(RESET);
-                } else {
-                    out.append(cell);
+        // 5. Spice (Stars) - Draw last and only in empty spaces to prevent flickering
+        for (var s : spice) {
+            int sx = (int) s[0], sy = (int) s[1];
+            if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+                if (charGrid[sy][sx] == ' ') {
+                    charGrid[sy][sx] = (char) s[2];
+                    colorGrid[sy][sx] = SPICE_COLOR;
                 }
             }
-            out.append("\n");
         }
-        var frameStr = out.toString();
-        synchronized (System.out) {
-            System.out.print(frameStr);
-            System.out.flush();
+
+        var out = new StringBuilder(h * w * 4);
+        out.append(CURSOR_TOP_LEFT);
+        for (int y = 0; y < h; y++) {
+            String lastColor = "";
+            for (int x = 0; x < w; x++) {
+                String color = colorGrid[y][x];
+                if (!color.equals(lastColor)) {
+                    out.append(color);
+                    lastColor = color;
+                }
+                out.append(charGrid[y][x]);
+            }
+            if (y < h - 1) out.append("\n"); // Avoid newline on the last line to prevent scrolling
         }
+        System.out.print(out.toString());
+        System.out.flush();
     }
 
     public static void main(String[] args) throws InterruptedException {
@@ -236,18 +240,27 @@ public class Sandworm {
         var fgConfigs = new ArrayList<DuneConfig>();
         var bgLayers = new ArrayList<String[][]>();
         var fgLayers = new ArrayList<String[][]>();
+        var spice = new ArrayList<double[]>();
+        var spiceChars = new char[]{'.', '·', '*'};
 
         var regenerateLayers = new Runnable() {
             public void run() {
+                int w = width;
+                int h = height;
                 bgConfigs.clear();
-                bgConfigs.add(new DuneConfig(height / 2 - 3, 4, 0.04, 0, '*', '.'));
-                bgConfigs.add(new DuneConfig(height / 2 + 1, 5, 0.07, 2, '^', '.'));
+                bgConfigs.add(new DuneConfig(h / 2 - 3, 4, 0.04, 0, '*', '.'));
+                bgConfigs.add(new DuneConfig(h / 2 + 1, 5, 0.07, 2, '^', '.'));
                 fgConfigs.clear();
-                fgConfigs.add(new DuneConfig(height / 2 + 7, 6, 0.09, 4, '_', ','));
+                fgConfigs.add(new DuneConfig(h / 2 + 7, 6, 0.09, 4, '_', ','));
                 bgLayers.clear();
-                for (var c : bgConfigs) bgLayers.add(generateDuneLayer(c));
+                for (var c : bgConfigs) bgLayers.add(generateDuneLayer(c, w, h));
                 fgLayers.clear();
-                for (var c : fgConfigs) fgLayers.add(generateDuneLayer(c));
+                for (var c : fgConfigs) fgLayers.add(generateDuneLayer(c, w, h));
+
+                spice.clear();
+                for (var i = 0; i < 60; i++) {
+                    spice.add(new double[]{random.nextInt(w), random.nextInt(h), spiceChars[random.nextInt(3)]});
+                }
             }
         };
         regenerateLayers.run();
@@ -256,18 +269,12 @@ public class Sandworm {
         var wormSegments = new ArrayList<int[]>();
         for (var i = 0; i < wormLength; i++) wormSegments.add(new int[]{-100, -100});
 
-        var spice = new ArrayList<double[]>();
-        var spiceChars = new char[]{'.', '·', '*'};
-        for (var i = 0; i < 60; i++) {
-            spice.add(new double[]{random.nextInt(width), random.nextInt(height), spiceChars[random.nextInt(3)]});
-        }
-
         var particles = new ArrayList<Particle>();
         var frameCount = 0;
         var maxFrames = testMode ? 100 : Integer.MAX_VALUE;
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.print(ALT_SCREEN_OFF + SHOW_CURSOR + RESET);
+            System.out.print(ALT_SCREEN_OFF + SHOW_CURSOR + RESET + CLEAR_SCREEN);
             System.out.println("The spice must flow.");
             System.out.flush();
         }));
@@ -277,13 +284,13 @@ public class Sandworm {
         var t = 0;
         while (frameCount < maxFrames) {
             if (needsRedraw.getAndSet(false)) {
-                System.out.print(CLEAR_SCREEN);
                 regenerateLayers.run();
                 wormSegments.clear();
                 for (var i = 0; i < wormLength; i++) wormSegments.add(new int[]{-100, -100});
                 particles.clear();
                 t = 0;
             }
+
 
             t++;
             var headX = (t % (width + wormLength)) - wormLength;
