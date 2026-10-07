@@ -1,5 +1,3 @@
-> **Zarchiwizowane (2026-10-07).** Zawartość (z historią) jest teraz w [michalskuza/mini-games](https://github.com/michalskuza/mini-games/tree/main/dune-sandworm) w katalogu `dune-sandworm/`.
-
 # Sandworm Terminal Animation
 
 A high-fidelity terminal animation of the Great Worm of Arrakis, written in Java.
